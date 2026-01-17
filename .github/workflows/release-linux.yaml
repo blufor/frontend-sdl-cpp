@@ -4,7 +4,9 @@
 # while POCO  will be linked statically.
 name: Build Release Package for Linux
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  workflow_call:
 
 jobs:
   build-deb:

@@ -3,7 +3,9 @@
 # including projectM.
 name: Build Release Package for Windows
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  workflow_call:
 
 jobs:
   build:

@@ -2,7 +2,22 @@
 # Builds a universal binary on macOS.
 name: Build Release Package for macOS
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      MACOS_CERTIFICATE_APPLICATION:
+        required: true
+      MACOS_CERTIFICATE_INSTALLER:
+        required: true
+      MACOS_CERTIFICATE_PASSWORD:
+        required: true
+      MACOS_NOTARY_API_KEY:
+        required: true
+      MACOS_NOTARY_KEY_ID:
+        required: true
+      MACOS_NOTARY_ISSUER_ID:
+        required: true
 
 jobs:
   build-deb:
@@ -112,19 +127,123 @@ jobs:
             "-DCMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/install-libprojectm;${GITHUB_WORKSPACE}/install-poco;${GITHUB_WORKSPACE}/install-libsdl2" \
             "-DPRESET_DIRS=${{ github.workspace }}/presets-cream-of-the-crop" \
             "-DTEXTURE_DIRS=${{ github.workspace }}/presets-milkdrop-texture-pack/textures" \
-            '-DDEFAULT_CONFIG_PATH=${application.dir}/../share/projectMSDL/' \
-            '-DDEFAULT_PRESETS_PATH=${application.dir}/../share/projectMSDL/presets/' \
-            '-DDEFAULT_TEXTURES_PATH=${application.dir}/../share/projectMSDL/textures/' \
             -DENABLE_INSTALL_BDEPS=ON
           cmake --build cmake-build-frontend-sdl2 --parallel
+          cmake --install cmake-build-frontend-sdl2 --prefix "${{ github.workspace }}/install"
+
+      - name: Import Code Signing Certificates
+        env:
+          MACOS_CERTIFICATE_APPLICATION: ${{ secrets.MACOS_CERTIFICATE_APPLICATION }}
+          MACOS_CERTIFICATE_INSTALLER: ${{ secrets.MACOS_CERTIFICATE_INSTALLER }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$MACOS_CERTIFICATE_APPLICATION" | base64 --decode > app_cert.p12 && chmod 600 app_cert.p12
+          echo "$MACOS_CERTIFICATE_INSTALLER" | base64 --decode > installer_cert.p12 && chmod 600 installer_cert.p12
+
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+
+          security import app_cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security import installer_cert.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/productsign
+
+          security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: -s -k "$KEYCHAIN_PASSWORD" build.keychain
+
+          rm app_cert.p12 installer_cert.p12
+
+      - name: Sign Application Bundle
+        run: |
+          APP_PATH="${{ github.workspace }}/install/projectM.app"
+          IDENTITY="Developer ID Application: Mischa Spiegelmock (5926VBQM6Y)"
+
+          # Sign all dylibs first (if PlugIns directory exists)
+          if [ -d "$APP_PATH/Contents/PlugIns" ]; then
+            find "$APP_PATH/Contents/PlugIns" -name "*.dylib" -exec \
+              codesign --force --options runtime --sign "$IDENTITY" {} \;
+          fi
+
+          # Sign the main executable
+          codesign --force --options runtime --sign "$IDENTITY" \
+            "$APP_PATH/Contents/MacOS/projectM"
+
+          # Sign the entire bundle
+          codesign --force --options runtime --sign "$IDENTITY" "$APP_PATH"
+
+          # Verify
+          codesign --verify --deep --strict "$APP_PATH"
+
+      - name: Notarize Application
+        env:
+          API_KEY_BASE64: ${{ secrets.MACOS_NOTARY_API_KEY }}
+          API_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          mkdir -p ~/.private_keys
+          echo "$API_KEY_BASE64" | base64 --decode > ~/.private_keys/AuthKey_${API_KEY_ID}.p8
+          chmod 600 ~/.private_keys/AuthKey_${API_KEY_ID}.p8
+
+          ditto -c -k --keepParent \
+            "${{ github.workspace }}/install/projectM.app" \
+            "projectM-notarize.zip"
+
+          xcrun notarytool submit "projectM-notarize.zip" \
+            --key ~/.private_keys/AuthKey_${API_KEY_ID}.p8 \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait
+
+          xcrun stapler staple "${{ github.workspace }}/install/projectM.app"
 
       - name: Package projectMSDL
         run: |
-          cd cmake-build-frontend-sdl2
-          cpack -G productbuild
+          # Get version from CMake
+          VERSION=$(grep "project(projectMSDL" frontend-sdl2/CMakeLists.txt | sed -E 's/.*VERSION ([0-9.]+).*/\1/')
+
+          # Build component package from signed app
+          pkgbuild \
+            --root "${{ github.workspace }}/install" \
+            --identifier "org.projectm-visualizer.projectmsdl" \
+            --version "$VERSION" \
+            --install-location "/Applications" \
+            --component-plist "frontend-sdl2/src/resources/projectMSDL-component.plist" \
+            "projectMSDL-component.pkg"
+
+          # Build unsigned product archive
+          productbuild \
+            --distribution "frontend-sdl2/src/resources/distribution.xml" \
+            --package-path "." \
+            --resources "frontend-sdl2/src/resources" \
+            "projectM-${VERSION}-macOS-universal-unsigned.pkg"
+
+          # Sign the package with productsign
+          productsign \
+            --sign "Developer ID Installer: Mischa Spiegelmock (5926VBQM6Y)" \
+            "projectM-${VERSION}-macOS-universal-unsigned.pkg" \
+            "projectM-${VERSION}-macOS-universal.pkg"
+
+          rm "projectM-${VERSION}-macOS-universal-unsigned.pkg"
+
+      - name: Notarize Package
+        env:
+          API_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          PKG_FILE=$(ls projectM-*.pkg | head -1)
+
+          xcrun notarytool submit "$PKG_FILE" \
+            --key ~/.private_keys/AuthKey_${API_KEY_ID}.p8 \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait
+
+          xcrun stapler staple "$PKG_FILE"
+
+          # Clean up API key
+          rm -f ~/.private_keys/AuthKey_${API_KEY_ID}.p8
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: projectMSDL-macOS-Universal
-          path: cmake-build-frontend-sdl2/*.pkg
+          path: projectM-*.pkg
