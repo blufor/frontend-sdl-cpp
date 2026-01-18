@@ -156,6 +156,7 @@ jobs:
         run: |
           APP_PATH="${{ github.workspace }}/install/projectM.app"
           IDENTITY="Developer ID Application: Mischa Spiegelmock (5926VBQM6Y)"
+          ENTITLEMENTS="${{ github.workspace }}/frontend-sdl2/src/resources/projectMSDL.entitlements"
 
           # Sign all dylibs first (if PlugIns directory exists)
           if [ -d "$APP_PATH/Contents/PlugIns" ]; then
@@ -163,12 +164,12 @@ jobs:
               codesign --force --options runtime --sign "$IDENTITY" {} \;
           fi
 
-          # Sign the main executable
-          codesign --force --options runtime --sign "$IDENTITY" \
+          # Sign the main executable with entitlements
+          codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" \
             "$APP_PATH/Contents/MacOS/projectM"
 
-          # Sign the entire bundle
-          codesign --force --options runtime --sign "$IDENTITY" "$APP_PATH"
+          # Sign the entire bundle with entitlements
+          codesign --force --options runtime --entitlements "$ENTITLEMENTS" --sign "$IDENTITY" "$APP_PATH"
 
           # Verify
           codesign --verify --deep --strict "$APP_PATH"

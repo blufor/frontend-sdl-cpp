@@ -31,6 +31,7 @@ set_target_properties(projectMSDL PROPERTIES
         MACOSX_BUNDLE_GUI_IDENTIFIER "org.projectm.frontend.sdl2"
         MACOSX_BUNDLE_ICON_FILE "projectMSDL.icns"
         MACOSX_BUNDLE_SHORT_VERSION_STRING "${projectMSDL_VERSION}"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resources/Info.plist.in"
         )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
