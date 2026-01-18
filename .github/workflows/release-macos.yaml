@@ -20,7 +20,7 @@ on:
         required: true
 
 jobs:
-  build-deb:
+  build-pkg:
     name: ProductBuild Installer, macOS x86_64+arm64
     runs-on: macos-latest
 
@@ -158,7 +158,13 @@ jobs:
           IDENTITY="Developer ID Application: Mischa Spiegelmock (5926VBQM6Y)"
           ENTITLEMENTS="${{ github.workspace }}/frontend-sdl2/src/resources/projectMSDL.entitlements"
 
-          # Sign all dylibs first (if PlugIns directory exists)
+          # Sign frameworks first (SDL2, Poco, etc.)
+          if [ -d "$APP_PATH/Contents/Frameworks" ]; then
+            find "$APP_PATH/Contents/Frameworks" \( -name "*.dylib" -o -name "*.framework" \) -exec \
+              codesign --force --options runtime --sign "$IDENTITY" {} \;
+          fi
+
+          # Sign plugins if present
           if [ -d "$APP_PATH/Contents/PlugIns" ]; then
             find "$APP_PATH/Contents/PlugIns" -name "*.dylib" -exec \
               codesign --force --options runtime --sign "$IDENTITY" {} \;
