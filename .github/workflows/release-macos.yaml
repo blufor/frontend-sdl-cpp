@@ -21,7 +21,7 @@ on:
 
 jobs:
   build-pkg:
-    name: ProductBuild Installer, macOS x86_64+arm64
+    name: ProductBuild and DMG Installers, macOS x86_64+arm64
     runs-on: macos-latest
 
     steps:
@@ -117,20 +117,6 @@ jobs:
           repository: projectM-visualizer/presets-milkdrop-texture-pack
           path: presets-milkdrop-texture-pack
 
-      - name: Build projectMSDL
-        run: |
-          mkdir cmake-build-frontend-sdl2
-          cmake -G Ninja -S frontend-sdl2 -B cmake-build-frontend-sdl2 \
-            '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_FREETYPE=OFF \
-            "-DCMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/install-libprojectm;${GITHUB_WORKSPACE}/install-poco;${GITHUB_WORKSPACE}/install-libsdl2" \
-            "-DPRESET_DIRS=${{ github.workspace }}/presets-cream-of-the-crop" \
-            "-DTEXTURE_DIRS=${{ github.workspace }}/presets-milkdrop-texture-pack/textures" \
-            -DENABLE_INSTALL_BDEPS=ON
-          cmake --build cmake-build-frontend-sdl2 --parallel
-          cmake --install cmake-build-frontend-sdl2 --prefix "${{ github.workspace }}/install"
-
       - name: Import Code Signing Certificates
         env:
           MACOS_CERTIFICATE_APPLICATION: ${{ secrets.MACOS_CERTIFICATE_APPLICATION }}
@@ -151,6 +137,20 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign:,productbuild: -s -k "$KEYCHAIN_PASSWORD" build.keychain
 
           rm app_cert.p12 installer_cert.p12
+
+      - name: Build projectMSDL
+        run: |
+          mkdir cmake-build-frontend-sdl2
+          cmake -G Ninja -S frontend-sdl2 -B cmake-build-frontend-sdl2 \
+            '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_FREETYPE=OFF \
+            "-DCMAKE_PREFIX_PATH=${GITHUB_WORKSPACE}/install-libprojectm;${GITHUB_WORKSPACE}/install-poco;${GITHUB_WORKSPACE}/install-libsdl2" \
+            "-DPRESET_DIRS=${{ github.workspace }}/presets-cream-of-the-crop" \
+            "-DTEXTURE_DIRS=${{ github.workspace }}/presets-milkdrop-texture-pack/textures" \
+            -DENABLE_INSTALL_BDEPS=ON
+          cmake --build cmake-build-frontend-sdl2 --parallel
+          cmake --install cmake-build-frontend-sdl2 --prefix "${{ github.workspace }}/install"
 
       - name: Sign Application Bundle
         run: |
@@ -180,7 +180,7 @@ jobs:
           # Verify
           codesign --verify --deep --strict "$APP_PATH"
 
-      - name: Notarize Application
+      - name: Notarize Application Bundle
         env:
           API_KEY_BASE64: ${{ secrets.MACOS_NOTARY_API_KEY }}
           API_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
@@ -202,11 +202,17 @@ jobs:
 
           xcrun stapler staple "${{ github.workspace }}/install/projectM.app"
 
-      - name: Package projectMSDL
-        run: |
-          # Get version from CMake
-          VERSION=$(grep "project(projectMSDL" frontend-sdl2/CMakeLists.txt | sed -E 's/.*VERSION ([0-9.]+).*/\1/')
+      - name: Upload .app Bundle Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectMSDL-macOS-Universal-APP
+          path: install/
 
+      - name: Create projectMSDL PKG Installer
+        run: |
+          # Get version from CMake cache
+          VERSION=$(grep 'CMAKE_PROJECT_VERSION:STATIC=' cmake-build-frontend-sdl2/CMakeCache.txt | grep -Eo '([0-9.]+)')
+          
           # Build component package from signed app
           pkgbuild \
             --root "${{ github.workspace }}/install" \
@@ -231,7 +237,7 @@ jobs:
 
           rm "projectM-${VERSION}-macOS-universal-unsigned.pkg"
 
-      - name: Notarize Package
+      - name: Notarize PKG Installer
         env:
           API_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
           API_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
@@ -246,11 +252,58 @@ jobs:
 
           xcrun stapler staple "$PKG_FILE"
 
-          # Clean up API key
-          rm -f ~/.private_keys/AuthKey_${API_KEY_ID}.p8
-
-      - name: Upload Artifact
+      - name: Upload PKG Installer Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: projectMSDL-macOS-Universal
+          name: projectMSDL-macOS-Universal-PKG
           path: projectM-*.pkg
+
+      - name: Create projectMSDL DMG Image
+        run: |
+          # Get version from CMake cache
+          VERSION=$(grep 'CMAKE_PROJECT_VERSION:STATIC=' cmake-build-frontend-sdl2/CMakeCache.txt | grep -Eo '([0-9.]+)')
+
+          # Install create-dmg
+          brew install create-dmg
+          
+          # Build and sign DMG image
+          create-dmg \
+            --volname "projectM Installer" \
+            --volicon "frontend-sdl2/src/resources/icons/icon.icns" \
+            --background "frontend-sdl2/src/resources/dmg_background.png" \
+            --window-pos 200 120 \
+            --window-size 800 400 \
+            --icon-size 100 \
+            --icon "projectM.app" 200 190 \
+            --hide-extension "projectM.app" \
+            --app-drop-link 600 185 \
+            --codesign "Developer ID Application: Mischa Spiegelmock (5926VBQM6Y)" \
+            "projectM-${VERSION}-macOS-universal.dmg" \
+            "install/"
+
+      - name: Notarize DMG Installer
+        env:
+          API_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          DMG_FILE=$(ls projectM-*.dmg | head -1)
+
+          xcrun notarytool submit "$DMG_FILE" \
+            --key ~/.private_keys/AuthKey_${API_KEY_ID}.p8 \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait
+
+          xcrun stapler staple "$DMG_FILE"
+
+      - name: Upload DMG Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: projectMSDL-macOS-Universal-DMG
+          path: projectM-*.dmg
+
+      - name: Cleanup Notarization API Key
+        if: ${{ always() }}
+        env:
+          API_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+        run: rm -f ~/.private_keys/AuthKey_${API_KEY_ID}.p8
