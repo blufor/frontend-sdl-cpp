@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout vcpkg
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: microsoft/vcpkg
           path: vcpkg
@@ -57,20 +57,20 @@ jobs:
             -Source "${{ env.FEED_URL }}"
 
       - name: Checkout projectMSDL Sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: frontend-sdl2
           ref: ${{ inputs.projectMSDLref }}
           submodules: recursive
 
       - name: Checkout Cream of the Crop preset pack
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: projectM-visualizer/presets-cream-of-the-crop
           path: presets-cream-of-the-crop
 
       - name: Checkout Milkdrop Texture Pack
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: projectM-visualizer/presets-milkdrop-texture-pack
           path: presets-milkdrop-texture-pack
@@ -96,7 +96,7 @@ jobs:
           cpack -G ZIP
 
       - name: Upload Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: projectMSDL-Windows-Portable-x64
           path: |
